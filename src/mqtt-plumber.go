@@ -56,9 +56,9 @@ func persist(topic string, p []byte) {
 
   // Create db connection
   c, err := influx.NewClient(&influx.ClientConfig{
-    Username: "bahn",
-    Password: "b8hn",
-    Database: "bahn_registrar",
+    Username: "plumber",
+    Password: "plumber",
+    Database: "mqtt_plumber",
   })
   if err != nil {
     panic(err)
@@ -79,8 +79,9 @@ func onSysMessageReceived(mqtt *MQTT.MqttClient, message MQTT.Message) {
   fmt.Printf("Received message on $SYS topic: %s\n", message.Topic())
   fmt.Printf("Message: %s ", message.Payload())
 
-  // Unmarshal payload by wrapping in json, converting to bytes, and using the
-  // json unmarshaler to figure out the value type
+  // Unmarshal payload by parsing the string value, wrapping in json, and
+  // converting to bytes, theb using the json unmarshaler to figure out what the
+  // correct numeric value types should be
   
   var json_payload []byte
   if re_numeric.Match(message.Payload()) {

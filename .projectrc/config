@@ -1,0 +1,4 @@
+[project]
+name="mqtt-plumber"
+home="${HOME}/go/go/src/github.com/impressiver/mqtt-plumber"
+projectrc="${PROJECT_HOME}/.projectrc"

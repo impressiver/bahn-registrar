@@ -1,26 +1,36 @@
-Bahn Registrar
-==============
+MQTT Plumber
+============
 
-Bahn Registrar is a pub/sub client and a REST API
-It watches, processes, records and answers questions about messages passing through message brokers.
+MQTT Plumber watches, processes, and answers questions about messages passing through MQTT brokers,
+prividing a simple REST API for querying time-series data.
+
+It's the plumbing between broker, datastore, and webapps.
 
 
-# Install
+## Install
 ```
 $ brew install influxdb
+$ go get code.google.com/p/go.tools/cmd/vet
+$ make
 ```
-
-## Optional tools
+### Optional tools
 ```
 $ go get github.com/Dieterbe/influx-cli
 ```
 
+### Run
+```
+$ make run
+```
 
-## InfluxDB
+
+## Notes
+
+### InfluxDB
 
 Default config:
--  db: bahn_registrar
--  login: bahn:b8hn
+-  db: mqtt_plumber
+-  login: plumber:plumber
 ```
 $ open http://localhost:8083
 ```
