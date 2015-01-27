@@ -1,0 +1,20 @@
+{
+	"ImportPath": "github.com/impressiver/mqtt-plumber",
+	"GoVersion": "go1.3.3",
+	"Deps": [
+		{
+			"ImportPath": "code.google.com/p/go.net/websocket",
+			"Comment": "null-240",
+			"Rev": "937a34c9de13c766c814510f76bca091dee06028"
+		},
+		{
+			"ImportPath": "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git",
+			"Rev": "3e58ec10bf2da9ef3fc639d12a0eb2e3596c2df7"
+		},
+		{
+			"ImportPath": "github.com/influxdb/influxdb/client",
+			"Comment": "v0.8.8",
+			"Rev": "afde71eb1740fd763ab9450e1f700ba0e53c36d0"
+		}
+	]
+}
