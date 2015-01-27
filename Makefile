@@ -1,4 +1,4 @@
-.PHONY: clean build run doc fmt lint vet test
+.PHONY: build run doc fmt lint vet test clean clean_vendor get_vendor prune_vendor
 
 # Environment
 
@@ -7,13 +7,10 @@ export PROJECT
 
 # Prepend project .vendor directory to the system GOPATH so import will
 # prioritize third party snapshots over common packages.
-#GOPATH := ${PWD}/.vendor:${GOPATH}
-#export GOPATH
+GOPATH := ${PWD}/.vendor:${GOPATH}
+export GOPATH
 
 default: build
-
-clean:
-	-e ./bin/${PROJECT} && rm ./bin/${PROJECT}
 
 build: clean vet
 		go build -v -o ./bin/${PROJECT} ./${PROJECT}.go
@@ -41,22 +38,21 @@ vet:
 test:
 		go test ./...
 
-# vendor_clean:
-#     rm -dRf ./.vendor/src
+clean:
+	if [ -e ./bin/${PROJECT} ] ; then rm ./bin/${PROJECT} ; fi
 
-# # We have to set GOPATH to just the .vendor
-# # directory to ensure that `go get` doesn't
-# # update packages in our primary GOPATH instead.
-# # This will happen if you already have the package
-# # installed in GOPATH since `go get` will use
-# # that existing location as the destination.
-# vendor_get: vendor_clean
-#     GOPATH=${PWD}/.vendor go get -d -u -v \
-#     github.com/jpoehls/gophermail \
-#     github.com/codegangsta/martini
+clean_vendor:
+		rm -dRf ./.vendor/src
 
-# vendor_update: vendor_get
-#     rm -rf `find ./.vendor/src -type d -name .git` \
-#     && rm -rf `find ./.vendor/src -type d -name .hg` \
-#     && rm -rf `find ./.vendor/src -type d -name .bzr` \
-#     && rm -rf `find ./.vendor/src -type d -name .svn`
+# Set GOPATH to just the .vendor directory to ensure that `go get` will not
+# update packages in the primary $GOPATH. This happens if the package is already
+# installed in $GOPATH.
+get_vendor: clean_vendor
+		GOPATH=${PWD}/.vendor go get -d -u -v \
+		github.com/influxdb/influxdb/client
+
+prune_vendor:
+		rm -rf `find ./.vendor/src -type d -name .git` \
+		&& rm -rf `find ./.vendor/src -type d -name .hg` \
+		&& rm -rf `find ./.vendor/src -type d -name .bzr` \
+		&& rm -rf `find ./.vendor/src -type d -name .svn`
