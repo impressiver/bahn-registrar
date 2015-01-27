@@ -13,10 +13,10 @@ export PROJECT
 default: build
 
 clean:
-	rm ./bin/${PROJECT}
+	-e ./bin/${PROJECT} && rm ./bin/${PROJECT}
 
 build: clean vet
-		go build -v -o ./bin/${PROJECT} ./src/${PROJECT}.go
+		go build -v -o ./bin/${PROJECT} ./${PROJECT}.go
 
 run: build
 		./bin/${PROJECT}
@@ -26,20 +26,20 @@ doc:
 
 # http://golang.org/cmd/go/#hdr-Run_gofmt_on_package_sources
 fmt:
-		go fmt ./src/...
+		go fmt ./...
 
 # https://github.com/golang/lint
 # go get github.com/golang/lint/golint
 lint:
-		golint ./src
+		golint ./
 
 # http://godoc.org/code.google.com/p/go.tools/cmd/vet
 # go get code.google.com/p/go.tools/cmd/vet
 vet:
-		go vet ./src/...
+		go vet ./...
 
 test:
-		go test ./src/...
+		go test ./...
 
 # vendor_clean:
 #     rm -dRf ./.vendor/src
