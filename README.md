@@ -15,6 +15,7 @@ $ make
 ```
 ### Optional tools
 ```
+$ go get github.com/golang/lint/golint
 $ go get github.com/Dieterbe/influx-cli
 ```
 

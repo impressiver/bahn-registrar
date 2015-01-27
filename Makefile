@@ -1,8 +1,8 @@
-.PHONY: build doc fmt lint run test vet
+.PHONY: clean build run doc fmt lint vet test
 
 # Environment
 
-PROJECT := "mqtt-plumber"
+PROJECT := mqtt-plumber
 export PROJECT
 
 # Prepend project .vendor directory to the system GOPATH so import will
@@ -12,7 +12,10 @@ export PROJECT
 
 default: build
 
-build: vet
+clean:
+	rm ./bin/${PROJECT}
+
+build: clean vet
 		go build -v -o ./bin/${PROJECT} ./src/${PROJECT}.go
 
 run: build
