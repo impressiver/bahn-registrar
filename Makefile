@@ -1,4 +1,4 @@
-.PHONY: build run doc fmt lint vet test clean clean_vendor get_vendor prune_vendor
+.PHONY: build run doc fmt lint vet test clean clean_vendor get_vendor save_vendor restore_vendor prune_vendor
 
 # Environment
 
@@ -50,6 +50,12 @@ clean_vendor:
 get_vendor: clean_vendor
 		GOPATH=${PWD}/.vendor go get -d -u -v \
 		github.com/influxdb/influxdb/client
+
+save_vendor:
+		GOPATH=${PWD}/.vendor godep save
+
+restore_vendor: clean_vendor
+		GOPATH=${PWD}/.vendor godep restore
 
 prune_vendor:
 		rm -rf `find ./.vendor/src -type d -name .git` \
