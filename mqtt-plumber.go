@@ -18,22 +18,22 @@ import (
 )
 
 // MQTT $SYS date form
-const date_form = "0000-00-00 00:00:00-0000"
+const dateFormat = "0000-00-00 00:00:00-0000"
 
 // Matcher for the above date form
-var re_date = regexp.MustCompile(`^[\d]{4}-[\d]{2}-[\d]{2}\s[\d]{2}:[\d]{2}:[\d]{2}-[\d]{4}$`)
+var reDate = regexp.MustCompile(`^[\d]{4}-[\d]{2}-[\d]{2}\s[\d]{2}:[\d]{2}:[\d]{2}-[\d]{4}$`)
 
 // Match numeric values (int, float, etc)
-var re_numeric = regexp.MustCompile(`^[0-9\.]+$`)
+var reNumeric = regexp.MustCompile(`^[0-9\.]+$`)
 
 // Match json
-var re_json = regexp.MustCompile(`^\{.*\}$`)
+var reJSON = regexp.MustCompile(`^\{.*\}$`)
 
 //
 // CLI flags
 //
 
-var opt_verbose *bool
+var optVerbose *bool
 
 //
 // Database
@@ -78,7 +78,7 @@ func persist(topic string, p []byte) {
 		panic(err)
 	}
 
-	if *opt_verbose {
+	if *optVerbose {
 		fmt.Printf("Persisted: %s", series)
 	}
 }
@@ -92,31 +92,31 @@ func parse(payload []byte) []byte {
 	// converting to bytes, theb using the json unmarshaler to figure out what the
 	// correct numeric value types should be
 
-	var json_payload []byte
+	var jsonPayload []byte
 	var matched string
-	if re_json.Match(payload) {
+	if reJSON.Match(payload) {
 		matched = "json"
-		json_payload = payload
-	} else if re_numeric.Match(payload) {
+		jsonPayload = payload
+	} else if reNumeric.Match(payload) {
 		matched = "numeric"
 		// Let json unmarshaler figure out what type of numeric
-		json_payload = []byte(fmt.Sprintf("{\"value\": %s}", payload))
-	} else if re_date.Match(payload) {
+		jsonPayload = []byte(fmt.Sprintf("{\"value\": %s}", payload))
+	} else if reDate.Match(payload) {
 		matched = "date"
 		// Reformat dates as ISO-8601 (w/o nanos)
-		t, _ := time.Parse(date_form, string(payload[:]))
-		json_payload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", t.Format(time.RFC3339)))
+		t, _ := time.Parse(dateFormat, string(payload[:]))
+		jsonPayload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", t.Format(time.RFC3339)))
 	} else {
 		matched = "string"
 		// Quote the value as a string
-		json_payload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", payload))
+		jsonPayload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", payload))
 	}
 
-	if *opt_verbose {
-		fmt.Printf("(%s) %s\n", matched, json_payload)
+	if *optVerbose {
+		fmt.Printf("(%s) %s\n", matched, jsonPayload)
 	}
 
-	return json_payload
+	return jsonPayload
 }
 
 //
@@ -132,7 +132,7 @@ func onSysMessageReceived(mqtt *MQTT.MqttClient, message MQTT.Message) {
 }
 
 func onTopicMessageReceived(mqtt *MQTT.MqttClient, message MQTT.Message) {
-	fmt.Printf("Received message on subscribed topic: %s\n", message.Topic())
+	fmt.Printf("Received message on watched topic: %s\n", message.Topic())
 	fmt.Printf("%s\n", message.Payload())
 
 	// Save the processed message
@@ -140,7 +140,7 @@ func onTopicMessageReceived(mqtt *MQTT.MqttClient, message MQTT.Message) {
 }
 
 func onAnyMessageReceived(mqtt *MQTT.MqttClient, message MQTT.Message) {
-	fmt.Printf("Received message on unsubscribed topic: %s\n", message.Topic())
+	fmt.Printf("Received message on unwatched topic: %s\n", message.Topic())
 	fmt.Printf("%s\n", parse(message.Payload()))
 }
 
@@ -165,10 +165,10 @@ func main() {
 	flag.Parse()
 
 	// Set global flags
-	opt_verbose = verbose
+	optVerbose = verbose
 
 	// Default publish topic (for sending stdin to MQTT)
-	default_pub_topic := strings.Replace(*publish, "{client}", *client, -1)
+	defaultPubTopic := strings.Replace(*publish, "{client}", *client, -1)
 
 	// Init MQTT options
 	opts := MQTT.NewClientOptions().AddBroker(*broker).SetClientId(*client).SetCleanSession(*clean)
@@ -191,8 +191,8 @@ func main() {
 	// Subscribe to $SYS topic
 	if *sys {
 		fmt.Println("Subscribing to $SYS")
-		sys_filter, _ := MQTT.NewTopicFilter("$SYS/#", 1)
-		mqtt.StartSubscription(onSysMessageReceived, sys_filter)
+		sysFilter, _ := MQTT.NewTopicFilter("$SYS/#", 1)
+		mqtt.StartSubscription(onSysMessageReceived, sysFilter)
 	}
 
 	// Split comma-separated watch list into array of topics
@@ -207,8 +207,8 @@ func main() {
 
 		// Subscribe to topic
 		fmt.Println("Subscribing to " + topic)
-		topic_filter, _ := MQTT.NewTopicFilter(topic, 1)
-		mqtt.StartSubscription(onTopicMessageReceived, topic_filter)
+		topicFilter, _ := MQTT.NewTopicFilter(topic, 1)
+		mqtt.StartSubscription(onTopicMessageReceived, topicFilter)
 	}
 
 	// Watch stdin and publish input to MQTT
@@ -224,12 +224,11 @@ func main() {
 		}
 
 		// Split input on first space: {the/pub/topic} {message payload with spaces}
-		var pub_topic, message = func(parts []string) (string, string) {
+		var pubTopic, message = func(parts []string) (string, string) {
 			if len(parts) == 2 {
 				return strings.Replace(parts[0], "{client}", *client, -1), parts[1]
-			} else {
-				return default_pub_topic, parts[0]
 			}
+			return defaultPubTopic, parts[0]
 		}(strings.SplitN(strings.TrimSpace(in), " ", 2))
 
 		// Don't publish empty messages
@@ -238,8 +237,8 @@ func main() {
 		}
 
 		// Publish to MQTT
-		fmt.Printf("Publishing to %s: %s\n", pub_topic, message)
-		res := mqtt.Publish(MQTT.QoS(*qos), pub_topic, []byte(message))
+		fmt.Printf("Publishing to %s: %s\n", pubTopic, message)
+		res := mqtt.Publish(MQTT.QoS(*qos), pubTopic, []byte(message))
 		<-res
 	}
 }
