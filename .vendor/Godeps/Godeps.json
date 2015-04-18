@@ -9,7 +9,8 @@
 		},
 		{
 			"ImportPath": "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git",
-			"Rev": "3e58ec10bf2da9ef3fc639d12a0eb2e3596c2df7"
+			"Comment": "v0.9.1-7-g15034ff",
+			"Rev": "15034ff3afa8fcc632973645ef8980f3fc456809"
 		},
 		{
 			"ImportPath": "github.com/influxdb/influxdb/client",
