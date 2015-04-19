@@ -43,11 +43,16 @@ var choke chan [2]string
 // --verbose flag
 var optVerbose *bool
 
+// Track successful topic subscriptions
+var subscriptions []string
+
 //
 // Database
 //
 
-func persist(topic string, payload []byte) {
+func persist(topic string, messageTopic string, payload []byte) {
+	parser := Parse(topic)
+
 	// Convert json to string:obj map
 	var data map[string]interface{}
 	if err := json.Unmarshal(payload, &data); err != nil {
@@ -55,7 +60,8 @@ func persist(topic string, payload []byte) {
 	}
 
 	// todo: (iw) parse topic wildcards into additional key/values
-	data["topic"] = topic
+	data["topic"] = messageTopic
+	// data["params"] = parser.Params(messageTopic)
 
 	// Split map into key/value arrays
 	var keys []string
@@ -99,18 +105,28 @@ func persist(topic string, payload []byte) {
 //
 
 // Subscribe to topic
-func subscribe(qos byte, topics ...string) {
+func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic string), qos byte, topics ...string) {
 	for i := range topics {
 		topic := topics[i]
 		if len(topic) == 0 {
-			fmt.Printf("Skipping empty topic at index %d\n", i)
+			if *optVerbose {
+				fmt.Printf("Skipping empty topic at index %d\n", i)
+			}
 			continue
 		}
 
+		curried := func(topic string) func(mqtt *MQTT.Client, message MQTT.Message) {
+			return func(mqtt *MQTT.Client, message MQTT.Message) {
+				handler(mqtt, message, topic)
+			}
+		}(topic)
+
 		fmt.Println("Subscribing to " + topic)
-		if token := mqtt.Subscribe(topic, qos, onTopicMessageReceived); token.Wait() && token.Error != nil {
+		if token := mqtt.Subscribe(topic, qos, curried); token.Wait() && token.Error() != nil {
 			fmt.Println(token.Error())
+			return
 		}
+		subscriptions = append(subscriptions, topic)
 	}
 }
 
@@ -169,16 +185,16 @@ func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 	fmt.Printf("%s\n", message.Payload())
 
 	// Save the processed message
-	persist(message.Topic(), parse(message.Payload()))
+	persist("$SYS/#", message.Topic(), parse(message.Payload()))
 	choke <- [2]string{message.Topic(), string(message.Payload())}
 }
 
-func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
-	fmt.Printf("Received message on watched topic: %s\n", message.Topic())
+func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic string) {
+	fmt.Printf("Received message on watched topic: %s (%s)\n", topic, message.Topic())
 	fmt.Printf("%s\n", message.Payload())
 
 	// Save the processed message
-	persist(message.Topic(), parse(message.Payload()))
+	persist(topic, message.Topic(), parse(message.Payload()))
 	choke <- [2]string{message.Topic(), string(message.Payload())}
 }
 
@@ -267,7 +283,7 @@ func main() {
 	}
 	// Create subscriptions
 	if len(topics) > 0 {
-		subscribe(byte(*qos), topics[:]...)
+		subscribe(onTopicMessageReceived, byte(*qos), topics[:]...)
 	}
 
 	// Just for giggles
