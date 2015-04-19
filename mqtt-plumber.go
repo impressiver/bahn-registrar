@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"math/rand"
 	"os"
 	"regexp"
@@ -38,7 +37,16 @@ var reJSON = regexp.MustCompile(`^\{.*\}$`)
 var mqtt *MQTT.Client
 
 // Incoming message channel
-var choke chan [2]string
+var msgs chan [2]string
+
+// --qos flag
+var optClientID *string
+
+// --publish flag
+var optPublish *string
+
+// --qos flag
+var optQos *int
 
 // --verbose flag
 var optVerbose *bool
@@ -61,7 +69,7 @@ func persist(topic string, messageTopic string, payload []byte) {
 
 	// todo: (iw) parse topic wildcards into additional key/values
 	data["topic"] = messageTopic
-	// data["params"] = parser.Params(messageTopic)
+	data["params"] = strings.Join(parser.Params(messageTopic), ", ")
 
 	// Split map into key/value arrays
 	var keys []string
@@ -186,7 +194,7 @@ func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 
 	// Save the processed message
 	persist("$SYS/#", message.Topic(), parse(message.Payload()))
-	choke <- [2]string{message.Topic(), string(message.Payload())}
+	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
 func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic string) {
@@ -195,13 +203,41 @@ func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic strin
 
 	// Save the processed message
 	persist(topic, message.Topic(), parse(message.Payload()))
-	choke <- [2]string{message.Topic(), string(message.Payload())}
+	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
 func onAnyMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 	fmt.Printf("Received message on unwatched topic: %s\n", message.Topic())
 	fmt.Printf("%s\n", parse(message.Payload()))
-	choke <- [2]string{message.Topic(), string(message.Payload())}
+	msgs <- [2]string{message.Topic(), string(message.Payload())}
+}
+
+func onStdinReceived(in string) {
+	// Empty input
+	if len(in) == 0 {
+		return
+	}
+
+	// Split input on first space: {the/pub/topic} {message payload with spaces}
+	var pubTopic, message = func(str string) (string, string) {
+		parts := strings.SplitN(str, " ", 2)
+		if len(parts) < 2 {
+			parts = []string{*optPublish, parts[0]}
+
+		}
+		return strings.Replace(parts[0], "{client}", *optClientID, -1), parts[1]
+	}(strings.TrimSpace(in))
+
+	// Don't publish empty messages
+	if len(message) == 0 {
+		return
+	}
+
+	// Publish to MQTT
+	fmt.Printf("Publishing to %s: %s\n", pubTopic, message)
+	if token := mqtt.Publish(pubTopic, byte(*optQos), false, message); token.Wait() && token.Error() != nil {
+		fmt.Println(token.Error())
+	}
 }
 
 //
@@ -209,14 +245,15 @@ func onAnyMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 //
 
 func main() {
-	stdin := bufio.NewReader(os.Stdin)
+	// stdin := bufio.NewReader(os.Stdin)
 	rand.Seed(time.Now().Unix())
 
-	choke = make(chan [2]string)
+	msgs = make(chan [2]string)
+	in := make(chan string)
 
 	// Config
 	broker := flag.String("broker", "tcp://mashtun:1883", "The MQTT server uri")
-	client := flag.String("client", "plumber-"+strconv.Itoa(rand.Intn(1000)), "The client id")
+	clientID := flag.String("client-id", "plumber-"+strconv.Itoa(rand.Intn(1000)), "The MQTT client id")
 	watch := flag.String("watch", "broadcast/#", "A comma-separated list of topics")
 	sys := flag.Bool("sys", false, "Persist $SYS status messages")
 	publish := flag.String("publish", "broadcast/client/{client}", "Default publish topic")
@@ -228,17 +265,17 @@ func main() {
 	flag.Parse()
 
 	// Set global flags
+	optClientID = clientID
+	optPublish = publish
+	optQos = qos
 	optVerbose = verbose
-
-	// Default publish topic (for sending stdin to MQTT)
-	defaultPubTopic := strings.Replace(*publish, "{client}", *client, -1)
 
 	received := 0
 
 	// Init MQTT options
 	opts := MQTT.NewClientOptions()
 	opts.AddBroker(*broker)
-	opts.SetClientID(*client)
+	opts.SetClientID(*clientID)
 	opts.SetCleanSession(*clean)
 
 	if len(*store) > 0 {
@@ -256,7 +293,7 @@ func main() {
 	}
 
 	// Successfully connected
-	fmt.Printf("Connected to %s as %s\n\n", *broker, *client)
+	fmt.Printf("Connected to %s as %s\n\n", *broker, *clientID)
 
 	// Subscribe to $SYS topic
 	if *sys {
@@ -281,45 +318,53 @@ func main() {
 
 		topics = append(topics, topic)
 	}
+
 	// Create subscriptions
 	if len(topics) > 0 {
 		subscribe(onTopicMessageReceived, byte(*qos), topics[:]...)
 	}
 
-	// Just for giggles
-	incoming := <-choke
-	fmt.Printf("RECEIVED TOPIC: %s MESSAGE: %s\n", incoming[0], incoming[1])
-	received++
-
 	// Watch stdin and publish input to MQTT
-	for {
-		fmt.Print("\n> ")
-
-		// Read a line of input
-		in, err := stdin.ReadString('\n')
-
-		// Borked
-		if err == io.EOF {
-			os.Exit(0)
-		}
-
-		// Split input on first space: {the/pub/topic} {message payload with spaces}
-		var pubTopic, message = func(parts []string) (string, string) {
-			if len(parts) == 2 {
-				return strings.Replace(parts[0], "{client}", *client, -1), parts[1]
+	go func(ch chan<- string) {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			s, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println(err)
+				close(ch)
+				return
 			}
-			return defaultPubTopic, parts[0]
-		}(strings.SplitN(strings.TrimSpace(in), " ", 2))
-
-		// Don't publish empty messages
-		if len(message) == 0 {
-			continue
+			ch <- s
 		}
 
-		// Publish to MQTT
-		fmt.Printf("Publishing to %s: %s\n", pubTopic, message)
-		if token := mqtt.Publish(pubTopic, byte(*qos), false, message); token.Wait() && token.Error() != nil {
-			fmt.Println(token.Error())
+		close(ch)
+	}(in)
+
+	prompt := true
+
+stdinloop:
+	for {
+		select {
+		case _, ok := <-msgs:
+			if !ok {
+				fmt.Println("msgs ch not ok")
+			}
+			// fmt.Printf("Received on %s: %s\n", incoming[0], incoming[1])
+			received++
+			prompt = true
+		case stdin, ok := <-in:
+			if !ok {
+				fmt.Println("stdin ch not ok")
+				prompt = true
+				break stdinloop
+			}
+			onStdinReceived(stdin)
+			prompt = true
+		case <-time.After(1 * time.Second):
+			if prompt {
+				prompt = false
+				fmt.Printf("\n> ")
+			}
 		}
 	}
 }

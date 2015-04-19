@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -39,7 +38,7 @@ func (p *Parser) Match(topic string) bool {
 }
 
 func (p *Parser) Params(topic string) []string {
-	return p.re.FindStringSubmatch(topic)[1:]
+	return p.re.FindStringSubmatch(topic)
 }
 
 func (p *Parser) Parse() {
@@ -71,8 +70,6 @@ func (p *Parser) Parse() {
 		p.params = append(p.params, param)
 		p.tokens[i] = param.re
 	}
-
-	fmt.Println(p.tokens)
 
 	p.re = regexp.MustCompile(strings.Join(p.tokens, "/"))
 }
