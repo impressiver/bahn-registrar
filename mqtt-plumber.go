@@ -8,11 +8,11 @@ import (
 	"math/rand"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/satori/go.uuid"
 	"github.com/vharitonsky/iniflags"
 
 	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
@@ -35,6 +35,9 @@ var reNumeric = regexp.MustCompile(`^[0-9\.]+$`)
 
 // Match json
 var reJSON = regexp.MustCompile(`^\{.*\}$`)
+
+// InfluxDB client
+var db *influx.Client
 
 // MQTT client
 var mqtt *MQTT.Client
@@ -107,22 +110,12 @@ func persist(topic string, messageTopic string, payload []byte) {
 		},
 	}
 
-	// Create db connection
-	c, err := influx.NewClient(&influx.ClientConfig{
-		Username: "plumber",
-		Password: "plumber",
-		Database: "mqtt_plumber",
-	})
-	if err != nil {
-		panic(err)
-	}
-
 	// Write to db or die trying
-	if err := c.WriteSeries([]*influx.Series{series}); err != nil {
+	if err := db.WriteSeries([]*influx.Series{series}); err != nil {
 		panic(err)
 	}
 
-	status("INFO", INFO, fmt.Sprintf("Persisted to series %s (params %s)\n", series.Name, data["params"]))
+	status("DB", OK, fmt.Sprintf("Persisted to series %s (params %s)\n", series.Name, data["params"]))
 }
 
 //
@@ -214,33 +207,53 @@ func parse(payload []byte) []byte {
 //
 
 func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
-	status("INFO", INFO, fmt.Sprintf("Received message on $SYS topic: %s\n", message.Topic()))
+	if message.Duplicate() {
+		status("SUB", WARN, fmt.Sprintf("Received duplicate message on $SYS topic: %s\n", message.Topic()))
+	} else {
+		status("SUB", INFO, fmt.Sprintf("Received message on $SYS topic: %s\n", message.Topic()))
+	}
+
 	if *optVerbose {
 		INFO.Printf("%s\n\n", message.Payload())
 	}
 
 	// Save the processed message
-	persist("$SYS/#", message.Topic(), parse(message.Payload()))
+	if !message.Duplicate() {
+		persist("$SYS/#", message.Topic(), parse(message.Payload()))
+	}
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
 func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic string) {
-	status("INFO", INFO, fmt.Sprintf("Received message on watched topic: %s (%s)\n", topic, message.Topic()))
+	if message.Duplicate() {
+		status("SUB", WARN, fmt.Sprintf("Received duplicate message on watched topic: %s\n", message.Topic()))
+	} else {
+		status("SUB", INFO, fmt.Sprintf("Received message on watched topic: %s\n", message.Topic()))
+	}
+
 	if *optVerbose {
 		INFO.Printf("%s\n\n", message.Payload())
 	}
 
 	// Save the processed message
-	persist(topic, message.Topic(), parse(message.Payload()))
+	if !message.Duplicate() {
+		persist(topic, message.Topic(), parse(message.Payload()))
+	}
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
 func onAnyMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
-	status("INFO", INFO, fmt.Sprintf("Received message on unwatched topic: %s\n", message.Topic()))
+	if message.Duplicate() {
+		status("SUB", WARN, fmt.Sprintf("Received duplicate message on unwatched topic: %s\n", message.Topic()))
+	} else {
+		status("SUB", INFO, fmt.Sprintf("Received message on unwatched topic: %s\n", message.Topic()))
+	}
+
 	if *optVerbose {
 		INFO.Printf("%s\n\n", message.Payload())
 	}
 
+	// Don't persist random messages
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
@@ -267,12 +280,12 @@ func onStdinReceived(in string) {
 
 	// Publish to MQTT
 	if *optVerbose {
-		INFO.Printf("Publishing to %s: %s\n", pubTopic, message)
+		status("PUB", INFO, fmt.Sprintf("Publishing to %s: %s\n", pubTopic, message))
 	}
 	if token := mqtt.Publish(pubTopic, byte(*optQos), false, message); token.Wait() && token.Error() != nil {
-		ERR.Println("Failed to publish message", pubTopic, token.Error())
+		status("PUB", ERR, fmt.Sprintln("Failed to publish message", pubTopic, token.Error()))
 	}
-	OK.Println("Message published to", pubTopic)
+	status("PUB", OK, fmt.Sprintln("Message published to", pubTopic))
 }
 
 //
@@ -281,13 +294,14 @@ func onStdinReceived(in string) {
 
 func main() {
 	rand.Seed(time.Now().Unix())
+	cid := uuid.NewV1()
 
 	msgs = make(chan [2]string)
 	in := make(chan string)
 
 	// Config
 	broker := flag.String("broker", "tcp://mashtun:1883", "The MQTT server uri")
-	clientID := flag.String("client-id", "plumber-"+strconv.Itoa(rand.Intn(1000)), "The MQTT client id")
+	clientID := flag.String("client-id", fmt.Sprintf("plumber-%s", cid), "The MQTT client id")
 	watch := flag.String("watch", "broadcast/#", "A comma-separated list of topics")
 	sys := flag.Bool("sys", false, "Persist $SYS status messages")
 	publish := flag.String("publish", "broadcast/client/{client}", "Default publish topic")
@@ -312,6 +326,19 @@ func main() {
 	PROMPT = color.New(color.FgCyan)
 
 	received := 0
+	sent := 0
+
+	// Init InfluxDB client
+	c, err := influx.NewClient(&influx.ClientConfig{
+		Username: "plumber",
+		Password: "plumber",
+		Database: "mqtt_plumber",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	db = c
 
 	// Init MQTT options
 	opts := MQTT.NewClientOptions()
@@ -387,24 +414,26 @@ stdinloop:
 	for {
 		select {
 		case _, ok := <-msgs:
+			prompt = true
 			if !ok {
 				status("ERR", ERR, "msgs channel not ok")
+				break stdinloop
 			}
 			// fmt.Printf("Received on %s: %s\n", incoming[0], incoming[1])
 			received++
-			prompt = true
 		case stdin, ok := <-in:
+			prompt = true
 			if !ok {
 				status("ERR", ERR, "stdin channel not ok")
-				prompt = true
 				break stdinloop
 			}
 			onStdinReceived(stdin)
-			prompt = true
+			sent++
 		case <-time.After(1 * time.Second):
+			// fmt.Printf("\x0c")
 			if prompt {
 				prompt = false
-				PROMPT.Printf("[topic] msg > ")
+				PROMPT.Printf("\n(%d:%d) [topic] msg > ", received, sent)
 			}
 		}
 	}
