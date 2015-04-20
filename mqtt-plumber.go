@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vharitonsky/iniflags"
+
 	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
 	influx "github.com/influxdb/influxdb/client"
 )
@@ -136,6 +138,7 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 		}
 		subscriptions = append(subscriptions, topic)
 	}
+	fmt.Println("")
 }
 
 func unsubscribe(topics ...string) {
@@ -245,7 +248,6 @@ func onStdinReceived(in string) {
 //
 
 func main() {
-	// stdin := bufio.NewReader(os.Stdin)
 	rand.Seed(time.Now().Unix())
 
 	msgs = make(chan [2]string)
@@ -262,7 +264,8 @@ func main() {
 	clean := flag.Bool("clean", true, "Start with a clean session")
 	store := flag.String("store", "", "Path to file store dir (default is in-memory)")
 	verbose := flag.Bool("verbose", false, "Increased logging")
-	flag.Parse()
+
+	iniflags.Parse() // Support for config.ini file (--config)
 
 	// Set global flags
 	optClientID = clientID
