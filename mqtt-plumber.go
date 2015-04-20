@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"math/rand"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +28,7 @@ import (
 //
 
 // MQTT $SYS date form
-const dateFormat = "0000-00-00 00:00:00-0000"
+const dateFormSys = "0000-00-00 00:00:00-0000"
 
 // Matcher for the above date form
 var reDate = regexp.MustCompile(`^[\d]{4}-[\d]{2}-[\d]{2}\s[\d]{2}:[\d]{2}:[\d]{2}-[\d]{4}$`)
@@ -82,40 +85,91 @@ var subscriptions []string
 
 func persist(topic string, messageTopic string, payload []byte) {
 	parser := Parse(topic)
+	params := parser.Params(messageTopic)
+	timestamp := time.Now()
+	precision := "s"
+
+	pts := make([]influx.Point, 2)
 
 	// Convert json to string:obj map
 	var data map[string]interface{}
 	if err := json.Unmarshal(payload, &data); err != nil {
-		panic(err)
+		status("DB", ERR, fmt.Sprintf("Error parsing payload, cannot persist", err))
+		return
 	}
 
-	// todo: (iw) parse topic wildcards into additional key/values
-	data["topic"] = messageTopic
-	data["params"] = strings.Join(parser.Params(messageTopic), ", ")
+	status("DB", INFO, fmt.Sprintf("Data: %v\n", data))
+	status("DB", INFO, fmt.Sprintf("Parsed: %v\n", params))
 
-	// Split map into key/value arrays
-	var keys []string
-	var values []interface{}
-	for key, value := range data {
-		keys = append(keys, key)
-		values = append(values, value)
+	tags := map[string]string{
+		"subscribed": topic,
+		"published":  messageTopic,
+		"params":     strings.Join(params, ", "),
+		"client":     *optClientID,
 	}
 
-	// Create series for the topic, with keys for columns and values for points
-	series := &influx.Series{
-		Name:    topic,
-		Columns: keys,
-		Points: [][]interface{}{
-			values,
-		},
+	for i, datum := range data {
+		// Move any fields beginning w/ underscore to tags
+		if strings.IndexRune(i, '_') == 0 {
+			tags[strings.TrimLeft(i, "_")] = datum.(string)
+			delete(data, i)
+			continue
+		}
+
+		// Detect obvious timestamps in payload
+		// todo: (iw) make this robuster
+		switch i {
+		case "timestamp": // expects RFC3339
+			if t, err := time.Parse(time.RFC3339Nano, datum.(string)); err == nil {
+				timestamp = t
+				precision = "s"
+				continue
+			}
+			if t, err := time.Parse(time.RFC3339, datum.(string)); err == nil {
+				timestamp = t
+				precision = "n"
+				continue
+			}
+		case "tst": // OwnTracks
+			stamp, err := strconv.ParseInt(datum.(string), 10, 64)
+			if err != nil {
+				continue
+			}
+			timestamp = time.Unix(stamp, 0)
+			precision = "s"
+		}
 	}
 
-	// Write to db or die trying
-	if err := db.WriteSeries([]*influx.Series{series}); err != nil {
-		panic(err)
+	// todo: (iw) fire off a signal that can be handled by various data formatters
+	// to insert additional series/points
+
+	pts[0] = influx.Point{
+		Name:      topic,
+		Tags:      tags,
+		Fields:    data,
+		Timestamp: timestamp,
+		Precision: precision,
 	}
 
-	status("DB", OK, fmt.Sprintf("Persisted to series %s (params %s)\n", series.Name, data["params"]))
+	pts[1] = influx.Point{
+		Name:      messageTopic,
+		Tags:      tags,
+		Fields:    data,
+		Timestamp: timestamp,
+		Precision: precision,
+	}
+
+	bps := influx.BatchPoints{
+		Points:          pts,
+		Database:        "mqtt_plumber",
+		RetentionPolicy: "default",
+	}
+	_, err := db.Write(bps)
+	if err != nil {
+		log.Fatal("Error writing points to db: ", err)
+	}
+
+	status("DB", OK, fmt.Sprintf("Persisted %v (tags %v) w/ ts %v\n", data, tags, timestamp))
 }
 
 //
@@ -128,11 +182,13 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 		topic := topics[i]
 		if len(topic) == 0 {
 			if *optVerbose {
-				WARN.Printf("Skipping empty topic at index %d\n", i)
+				status("SUB", WARN, fmt.Sprintf("Skipping empty topic at index %d\n", i))
 			}
 			continue
 		}
 
+		// Wrap the message handler so the subscribed topic (w/ wildcards) can be
+		// used to parse incoming messages (which have fully resolved topic paths)
 		curried := func(topic string) func(mqtt *MQTT.Client, message MQTT.Message) {
 			return func(mqtt *MQTT.Client, message MQTT.Message) {
 				handler(mqtt, message, topic)
@@ -140,11 +196,11 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 		}(topic)
 
 		if *optVerbose {
-			INFO.Println("Subscribing to " + topic)
+			status("SUB", INFO, fmt.Sprintln("Subscribing to", topic))
 		}
 
 		if token := mqtt.Subscribe(topic, qos, curried); token.Wait() && token.Error() != nil {
-			ERR.Println("Failed to subscribe to", topic, token.Error())
+			status("SUB", ERR, fmt.Sprintln("Failed to subscribe to", topic, token.Error()))
 			return
 		}
 		status("OK", OK, fmt.Sprintln("Subscribed to", topic))
@@ -158,10 +214,10 @@ func unsubscribe(topics ...string) {
 		topic := topics[i]
 
 		if *optVerbose {
-			INFO.Println("Unsubscribing from " + topic)
+			status("UNSUB", INFO, fmt.Sprintln("Unsubscribing from ", topic))
 		}
 		if token := mqtt.Unsubscribe(topic); token.Wait() && token.Error() != nil {
-			ERR.Println("Failed to unsubscribe from", topic, token.Error())
+			status("UNSUB", ERR, fmt.Sprintln("Failed to unsubscribe from", topic, token.Error()))
 		}
 	}
 }
@@ -170,33 +226,54 @@ func unsubscribe(topics ...string) {
 // Message parsing
 //
 
-func parse(payload []byte) []byte {
-	// Unmarshal payload by parsing the string value, wrapping in json, and
-	// converting to bytes, theb using the json unmarshaler to figure out what the
-	// correct numeric value types should be
-
-	var jsonPayload []byte
+func parse(payload []byte) (string, []byte) {
+	parsed := payload
 	var matched string
+
 	if reJSON.Match(payload) {
 		matched = "json"
-		jsonPayload = payload
 	} else if reNumeric.Match(payload) {
 		matched = "numeric"
 		// Let json unmarshaler figure out what type of numeric
-		jsonPayload = []byte(fmt.Sprintf("{\"value\": %s}", payload))
 	} else if reDate.Match(payload) {
 		matched = "date"
-		// Reformat dates as ISO-8601 (w/o nanos)
-		t, _ := time.Parse(dateFormat, string(payload[:]))
-		jsonPayload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", t.Format(time.RFC3339)))
+		// Reformat $SYS dates as ISO-8601 (w/o nanos)
+		t, _ := time.Parse(dateFormSys, string(payload[:]))
+		parsed = []byte(t.Format(time.RFC3339))
+	} else if _, err := time.Parse(time.RFC3339Nano, string(payload[:])); err == nil {
+		matched = "date"
+	} else if _, err := time.Parse(time.RFC3339, string(payload[:])); err == nil {
+		matched = "date"
 	} else {
 		matched = "string"
-		// Quote the value as a string
-		jsonPayload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", payload))
+		// By default, quote the value as a string
 	}
 
 	if *optVerbose {
-		INFO.Printf("parsed (%s) %s\n", matched, jsonPayload)
+		status("PARSE", INFO, fmt.Sprintf("parsed (%s) %s\n", matched, parsed))
+	}
+
+	return matched, parsed
+}
+
+func asJSON(payload []byte) []byte {
+	// Unmarshal payload by parsing the string value, wrapping in json, and
+	// converting to bytes, theb using the json unmarshaler to figure out what the
+	// correct numeric value types should be
+	matched, parsed := parse(payload)
+	var jsonPayload []byte
+
+	switch matched {
+	case "json":
+		jsonPayload = parsed
+	case "numeric":
+		jsonPayload = []byte(fmt.Sprintf("{\"value\": %s}", parsed))
+	default:
+		jsonPayload = []byte(fmt.Sprintf("{\"value\": \"%s\"}", parsed))
+	}
+
+	if *optVerbose {
+		status("JSON", INFO, fmt.Sprintf("%s\n", jsonPayload))
 	}
 
 	return jsonPayload
@@ -214,12 +291,12 @@ func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 	}
 
 	if *optVerbose {
-		INFO.Printf("%s\n\n", message.Payload())
+		status("SUB", INFO, fmt.Sprintf("%s\n\n", message.Payload()))
 	}
 
 	// Save the processed message
 	if !message.Duplicate() {
-		persist("$SYS/#", message.Topic(), parse(message.Payload()))
+		persist("$SYS/#", message.Topic(), asJSON(message.Payload()))
 	}
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
@@ -232,12 +309,12 @@ func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic strin
 	}
 
 	if *optVerbose {
-		INFO.Printf("%s\n\n", message.Payload())
+		status("SUB", INFO, fmt.Sprintf("%s\n\n", message.Payload()))
 	}
 
 	// Save the processed message
 	if !message.Duplicate() {
-		persist(topic, message.Topic(), parse(message.Payload()))
+		persist(topic, message.Topic(), asJSON(message.Payload()))
 	}
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
@@ -250,7 +327,7 @@ func onAnyMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 	}
 
 	if *optVerbose {
-		INFO.Printf("%s\n\n", message.Payload())
+		status("SUB", INFO, fmt.Sprintf("%s\n\n", message.Payload()))
 	}
 
 	// Don't persist random messages
@@ -300,7 +377,8 @@ func main() {
 	in := make(chan string)
 
 	// Config
-	broker := flag.String("broker", "tcp://mashtun:1883", "The MQTT server uri")
+	dbURI := flag.String("db", "http://localhost:8086", "The InfluxDB server uri")
+	brokerURI := flag.String("broker", "tcp://mashtun:1883", "The MQTT server uri")
 	clientID := flag.String("client-id", fmt.Sprintf("plumber-%s", cid), "The MQTT client id")
 	watch := flag.String("watch", "broadcast/#", "A comma-separated list of topics")
 	sys := flag.Bool("sys", false, "Persist $SYS status messages")
@@ -311,7 +389,8 @@ func main() {
 	store := flag.String("store", "", "Path to file store dir (default is in-memory)")
 	verbose := flag.Bool("verbose", false, "Increased logging")
 
-	iniflags.Parse() // Support for config.ini file (--config)
+	// Support config.ini file (--config=/path/to/config.ini)
+	iniflags.Parse()
 
 	// Set global flags
 	optClientID = clientID
@@ -329,20 +408,30 @@ func main() {
 	sent := 0
 
 	// Init InfluxDB client
-	c, err := influx.NewClient(&influx.ClientConfig{
+	dbURL, err := url.Parse(*dbURI)
+	if err != nil {
+		log.Fatal("Error parsing db url", err)
+	}
+	con, err := influx.NewClient(influx.Config{
+		URL:      *dbURL,
 		Username: "plumber",
 		Password: "plumber",
-		Database: "mqtt_plumber",
 	})
 	if err != nil {
-		panic(err)
+		log.Fatal("Error connecting to InfluxDB", err)
 	}
 
-	db = c
+	dur, ver, err := con.Ping()
+	if err != nil {
+		log.Fatal("Error pinging InfluxDB: ", err)
+	}
+	status("OK", OK, fmt.Sprintf("Connected to db in %v (InfluxDB v%s)\n", dur, ver))
+
+	db = con
 
 	// Init MQTT options
 	opts := MQTT.NewClientOptions()
-	opts.AddBroker(*broker)
+	opts.AddBroker(*brokerURI)
 	opts.SetClientID(*clientID)
 	opts.SetCleanSession(*clean)
 
@@ -357,15 +446,15 @@ func main() {
 	// Create client and connect
 	mqtt = MQTT.NewClient(opts)
 	if token := mqtt.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+		log.Panic("Error connecting to MQTT broker", token.Error())
 	}
 
 	// Successfully connected
-	status("OK", OK, fmt.Sprintf("Connected to %s as %s\n\n", *broker, *clientID))
+	status("OK", OK, fmt.Sprintf("Connected to broker as %s\n\n", *clientID))
 
 	// Subscribe to $SYS topic
 	if *sys {
-		INFO.Println("Subscribing to $SYS")
+		status("SUB", INFO, "Subscribing to $SYS")
 		mqtt.Subscribe("$SYS/#", byte(*qos), onSysMessageReceived)
 	}
 
@@ -375,7 +464,7 @@ func main() {
 	for i := range topiclist {
 		topic := strings.TrimSpace(topiclist[i])
 		if len(topic) == 0 {
-			status("ERR", ERR, fmt.Sprintf("Skipping empty watch topic at index %d\n", i))
+			status("ERR", ERR, fmt.Sprintf("Skipping empty topic (item %d in '%s')\n", i+1, *watch))
 			continue
 		}
 
