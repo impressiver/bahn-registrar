@@ -1,4 +1,4 @@
-.PHONY: build run doc fmt lint vet test clean vendor_clean vendor_get vendor_save vendor_restore vendor_prune
+.PHONY: build run doc fmt lint vet test clean vendor_shrinkwrap
 
 # Environment
 
@@ -7,7 +7,7 @@ export PROJECT
 
 # Prepend project .vendor directory to the system GOPATH so import will
 # prioritize third party snapshots over common packages.
-GOPATH := ${PWD}/.vendor:${GOPATH}
+GOPATH := ${PWD}/.vendor:`godep path`:${GOPATH}
 export GOPATH
 
 default: build
@@ -42,26 +42,10 @@ clean: vendor_clean
 	if [ -e ./bin/${PROJECT} ] ; then rm ./bin/${PROJECT} ; fi
 
 vendor_clean:
-	rm -dRf ./.vendor/src
+	rm -dRf ./vendor
 
-# Set GOPATH to just the .vendor directory to ensure that `go get` will not
-# update packages in the primary $GOPATH. This happens if the package is already
-# installed in $GOPATH.
-vendor_get: vendor_clean
-	cd ./.vendor && \
-	GOPATH=${PWD}/.vendor go get -d -u -v \
-	github.com/influxdb/influxdb/client \
-	git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git
-
-vendor_restore: vendor_clean
-	cd ./.vendor && \
-	GOPATH=${PWD}/.vendor godep restore
-
-vendor_save:
-	cd ./.vendor && \
-	GOPATH=${PWD}/.vendor godep save
-
-vendor_prune:
+vendor_shrinkwrap: vendor_clean
+		cp -Rf ./Godeps/_workspace/ ./.vendor && \
 		rm -rf `find ./.vendor/src -type d -name .git` \
 		&& rm -rf `find ./.vendor/src -type d -name .hg` \
 		&& rm -rf `find ./.vendor/src -type d -name .bzr` \

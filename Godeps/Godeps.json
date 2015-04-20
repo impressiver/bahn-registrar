@@ -1,0 +1,48 @@
+{
+	"ImportPath": "github.com/impressiver/mqtt-plumber",
+	"GoVersion": "go1.4.2",
+	"Deps": [
+		{
+			"ImportPath": "code.google.com/p/go-uuid/uuid",
+			"Comment": "null-15",
+			"Rev": "35bc42037350f0078e3c974c6ea690f1926603ab"
+		},
+		{
+			"ImportPath": "code.google.com/p/go.net/websocket",
+			"Comment": "null-240",
+			"Rev": "937a34c9de13c766c814510f76bca091dee06028"
+		},
+		{
+			"ImportPath": "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git",
+			"Comment": "v0.9.1-7-g15034ff",
+			"Rev": "15034ff3afa8fcc632973645ef8980f3fc456809"
+		},
+		{
+			"ImportPath": "github.com/fatih/color",
+			"Rev": "f952d5afece9417e6240c2b649c1ef84bc3b6299"
+		},
+		{
+			"ImportPath": "github.com/influxdb/influxdb/client",
+			"Comment": "v0.9.0-rc25-86-g3332f09",
+			"Rev": "3332f09c5b6c0d8c01750c87112f9eea663d7d9c"
+		},
+		{
+			"ImportPath": "github.com/influxdb/influxdb/influxql",
+			"Comment": "v0.9.0-rc25-86-g3332f09",
+			"Rev": "3332f09c5b6c0d8c01750c87112f9eea663d7d9c"
+		},
+		{
+			"ImportPath": "github.com/satori/go.uuid",
+			"Rev": "242673bbc820e051ef00033e274d32e08ece9e15"
+		},
+		{
+			"ImportPath": "github.com/shiena/ansicolor",
+			"Rev": "8368d3b31cf6f2c2464c7a91675342c9a0ac6658"
+		},
+		{
+			"ImportPath": "github.com/vharitonsky/iniflags",
+			"Comment": "v.1.0-21-g14f4b95",
+			"Rev": "14f4b95d09b99e2475e82c37a2f943ef2469a890"
+		}
+	]
+}
