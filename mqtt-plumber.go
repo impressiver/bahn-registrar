@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/vharitonsky/iniflags"
 
 	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
@@ -40,6 +41,22 @@ var mqtt *MQTT.Client
 
 // Incoming message channel
 var msgs chan [2]string
+
+// Colors
+// ------
+var ERR *color.Color
+var WARN *color.Color
+var OK *color.Color
+var INFO *color.Color
+var PROMPT *color.Color
+
+func status(status string, c *color.Color, out string) {
+	put := c.SprintFunc()
+	fmt.Printf("[%s] %s", put(status), out)
+}
+
+// Opts
+// ----
 
 // --qos flag
 var optClientID *string
@@ -105,9 +122,7 @@ func persist(topic string, messageTopic string, payload []byte) {
 		panic(err)
 	}
 
-	if *optVerbose {
-		fmt.Printf("Persisted: %s", series)
-	}
+	status("INFO", INFO, fmt.Sprintf("Persisted to series %s (params %s)\n", series.Name, data["params"]))
 }
 
 //
@@ -120,7 +135,7 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 		topic := topics[i]
 		if len(topic) == 0 {
 			if *optVerbose {
-				fmt.Printf("Skipping empty topic at index %d\n", i)
+				WARN.Printf("Skipping empty topic at index %d\n", i)
 			}
 			continue
 		}
@@ -131,11 +146,15 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 			}
 		}(topic)
 
-		fmt.Println("Subscribing to " + topic)
+		if *optVerbose {
+			INFO.Println("Subscribing to " + topic)
+		}
+
 		if token := mqtt.Subscribe(topic, qos, curried); token.Wait() && token.Error() != nil {
-			fmt.Println(token.Error())
+			ERR.Println("Failed to subscribe to", topic, token.Error())
 			return
 		}
+		status("OK", OK, fmt.Sprintln("Subscribed to", topic))
 		subscriptions = append(subscriptions, topic)
 	}
 	fmt.Println("")
@@ -144,9 +163,12 @@ func subscribe(handler func(mqtt *MQTT.Client, message MQTT.Message, topic strin
 func unsubscribe(topics ...string) {
 	for i := range topics {
 		topic := topics[i]
-		fmt.Println("Unsubscribing from " + topic)
+
+		if *optVerbose {
+			INFO.Println("Unsubscribing from " + topic)
+		}
 		if token := mqtt.Unsubscribe(topic); token.Wait() && token.Error() != nil {
-			fmt.Println(token.Error())
+			ERR.Println("Failed to unsubscribe from", topic, token.Error())
 		}
 	}
 }
@@ -181,7 +203,7 @@ func parse(payload []byte) []byte {
 	}
 
 	if *optVerbose {
-		fmt.Printf("(%s) %s\n", matched, jsonPayload)
+		INFO.Printf("parsed (%s) %s\n", matched, jsonPayload)
 	}
 
 	return jsonPayload
@@ -192,8 +214,10 @@ func parse(payload []byte) []byte {
 //
 
 func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
-	fmt.Printf("Received message on $SYS topic: %s\n", message.Topic())
-	fmt.Printf("%s\n", message.Payload())
+	status("INFO", INFO, fmt.Sprintf("Received message on $SYS topic: %s\n", message.Topic()))
+	if *optVerbose {
+		INFO.Printf("%s\n\n", message.Payload())
+	}
 
 	// Save the processed message
 	persist("$SYS/#", message.Topic(), parse(message.Payload()))
@@ -201,8 +225,10 @@ func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 }
 
 func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic string) {
-	fmt.Printf("Received message on watched topic: %s (%s)\n", topic, message.Topic())
-	fmt.Printf("%s\n", message.Payload())
+	status("INFO", INFO, fmt.Sprintf("Received message on watched topic: %s (%s)\n", topic, message.Topic()))
+	if *optVerbose {
+		INFO.Printf("%s\n\n", message.Payload())
+	}
 
 	// Save the processed message
 	persist(topic, message.Topic(), parse(message.Payload()))
@@ -210,8 +236,11 @@ func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic strin
 }
 
 func onAnyMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
-	fmt.Printf("Received message on unwatched topic: %s\n", message.Topic())
-	fmt.Printf("%s\n", parse(message.Payload()))
+	status("INFO", INFO, fmt.Sprintf("Received message on unwatched topic: %s\n", message.Topic()))
+	if *optVerbose {
+		INFO.Printf("%s\n\n", message.Payload())
+	}
+
 	msgs <- [2]string{message.Topic(), string(message.Payload())}
 }
 
@@ -237,10 +266,13 @@ func onStdinReceived(in string) {
 	}
 
 	// Publish to MQTT
-	fmt.Printf("Publishing to %s: %s\n", pubTopic, message)
-	if token := mqtt.Publish(pubTopic, byte(*optQos), false, message); token.Wait() && token.Error() != nil {
-		fmt.Println(token.Error())
+	if *optVerbose {
+		INFO.Printf("Publishing to %s: %s\n", pubTopic, message)
 	}
+	if token := mqtt.Publish(pubTopic, byte(*optQos), false, message); token.Wait() && token.Error() != nil {
+		ERR.Println("Failed to publish message", pubTopic, token.Error())
+	}
+	OK.Println("Message published to", pubTopic)
 }
 
 //
@@ -273,6 +305,12 @@ func main() {
 	optQos = qos
 	optVerbose = verbose
 
+	ERR = color.New(color.FgRed)
+	WARN = color.New(color.FgYellow)
+	OK = color.New(color.FgGreen)
+	INFO = color.New(color.FgMagenta)
+	PROMPT = color.New(color.FgCyan)
+
 	received := 0
 
 	// Init MQTT options
@@ -296,11 +334,11 @@ func main() {
 	}
 
 	// Successfully connected
-	fmt.Printf("Connected to %s as %s\n\n", *broker, *clientID)
+	status("OK", OK, fmt.Sprintf("Connected to %s as %s\n\n", *broker, *clientID))
 
 	// Subscribe to $SYS topic
 	if *sys {
-		fmt.Println("Subscribing to $SYS")
+		INFO.Println("Subscribing to $SYS")
 		mqtt.Subscribe("$SYS/#", byte(*qos), onSysMessageReceived)
 	}
 
@@ -310,7 +348,7 @@ func main() {
 	for i := range topiclist {
 		topic := strings.TrimSpace(topiclist[i])
 		if len(topic) == 0 {
-			fmt.Printf("Skipping empty watch topic at index %d\n", i)
+			status("ERR", ERR, fmt.Sprintf("Skipping empty watch topic at index %d\n", i))
 			continue
 		}
 
@@ -350,14 +388,14 @@ stdinloop:
 		select {
 		case _, ok := <-msgs:
 			if !ok {
-				fmt.Println("msgs ch not ok")
+				status("ERR", ERR, "msgs channel not ok")
 			}
 			// fmt.Printf("Received on %s: %s\n", incoming[0], incoming[1])
 			received++
 			prompt = true
 		case stdin, ok := <-in:
 			if !ok {
-				fmt.Println("stdin ch not ok")
+				status("ERR", ERR, "stdin channel not ok")
 				prompt = true
 				break stdinloop
 			}
@@ -366,7 +404,7 @@ stdinloop:
 		case <-time.After(1 * time.Second):
 			if prompt {
 				prompt = false
-				fmt.Printf("\n> ")
+				PROMPT.Printf("[topic] msg > ")
 			}
 		}
 	}
