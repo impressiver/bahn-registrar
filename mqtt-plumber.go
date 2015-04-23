@@ -64,6 +64,9 @@ func status(status string, c *color.Color, out string) {
 // Opts
 // ----
 
+// database (parsed from --db path)
+var optDatabase *string
+
 // --qos flag
 var optClientID *string
 
@@ -98,8 +101,8 @@ func persist(topic string, messageTopic string, payload []byte) {
 		return
 	}
 
-	status("DB", INFO, fmt.Sprintf("Data: %v\n", data))
-	status("DB", INFO, fmt.Sprintf("Parsed: %v\n", params))
+	// status("DB", INFO, fmt.Sprintf("Data: %v\n", data))
+	// status("DB", INFO, fmt.Sprintf("Parsed: %v\n", params))
 
 	tags := map[string]string{
 		"subscribed": topic,
@@ -140,7 +143,7 @@ func persist(topic string, messageTopic string, payload []byte) {
 		}
 	}
 
-	// todo: (iw) fire off a signal that can be handled by various data formatters
+	// todo: (iw) send to channel that can be handled by various data formatters
 	// to insert additional series/points
 
 	pts[0] = influx.Point{
@@ -161,7 +164,7 @@ func persist(topic string, messageTopic string, payload []byte) {
 
 	bps := influx.BatchPoints{
 		Points:          pts,
-		Database:        "mqtt_plumber",
+		Database:        *optDatabase,
 		RetentionPolicy: "default",
 	}
 	_, err := db.Write(bps)
@@ -287,7 +290,7 @@ func onSysMessageReceived(mqtt *MQTT.Client, message MQTT.Message) {
 	if message.Duplicate() {
 		status("SUB", WARN, fmt.Sprintf("Received duplicate message on $SYS topic: %s\n", message.Topic()))
 	} else {
-		status("SUB", INFO, fmt.Sprintf("Received message on $SYS topic: %s\n", message.Topic()))
+		status("SUB", OK, fmt.Sprintf("Received message on $SYS topic: %s\n", message.Topic()))
 	}
 
 	if *optVerbose {
@@ -305,7 +308,7 @@ func onTopicMessageReceived(mqtt *MQTT.Client, message MQTT.Message, topic strin
 	if message.Duplicate() {
 		status("SUB", WARN, fmt.Sprintf("Received duplicate message on watched topic: %s\n", message.Topic()))
 	} else {
-		status("SUB", INFO, fmt.Sprintf("Received message on watched topic: %s\n", message.Topic()))
+		status("SUB", OK, fmt.Sprintf("Received message on watched topic: %s\n", message.Topic()))
 	}
 
 	if *optVerbose {
@@ -371,29 +374,46 @@ func onStdinReceived(in string) {
 
 func main() {
 	rand.Seed(time.Now().Unix())
-	cid := uuid.NewV1()
 
 	msgs = make(chan [2]string)
 	in := make(chan string)
 
 	// Config
-	dbURI := flag.String("db", "http://localhost:8086", "The InfluxDB server uri")
-	brokerURI := flag.String("broker", "tcp://mashtun:1883", "The MQTT server uri")
-	clientID := flag.String("client-id", fmt.Sprintf("plumber-%s", cid), "The MQTT client id")
+	dbURI := flag.String("db", "http://localhost:8086/mqtt_plumber", "The InfluxDB server uri")
+	brokerURI := flag.String("broker", "tcp://localhost:1883", "The MQTT server uri")
 	watch := flag.String("watch", "broadcast/#", "A comma-separated list of topics")
 	sys := flag.Bool("sys", false, "Persist $SYS status messages")
 	publish := flag.String("publish", "broadcast/client/{client}", "Default publish topic")
 	prefix := flag.String("prefix", "", "Base topic hierarchy (namespace) prepended to subscriptions")
-	qos := flag.Int("qos", 0, "QoS level for subscriptions")
-	clean := flag.Bool("clean", true, "Start with a clean session")
+	qos := flag.Int("qos", 1, "QoS level for subscriptions")
+	clean := flag.Bool("clean", false, "Start with a clean session")
 	store := flag.String("store", "", "Path to file store dir (default is in-memory)")
 	verbose := flag.Bool("verbose", false, "Increased logging")
 
 	// Support config.ini file (--config=/path/to/config.ini)
 	iniflags.Parse()
 
+	dbURL, err := url.Parse(*dbURI)
+	if err != nil {
+		log.Fatal("Error parsing db url", err)
+	}
+	database := strings.TrimLeft(dbURL.Path, "/")
+
+	brokerURL, err := url.Parse(*brokerURI)
+	if err != nil {
+		log.Fatal("Error parsing db url", err)
+	}
+	var clientID string
+	if brokerURL.User != nil {
+		clientID = brokerURL.User.Username()
+	} else {
+		cid := uuid.NewV1()
+		clientID = fmt.Sprintf("plumber-%s", cid)
+	}
+
 	// Set global flags
-	optClientID = clientID
+	optDatabase = &database
+	optClientID = &clientID
 	optPublish = publish
 	optQos = qos
 	optVerbose = verbose
@@ -408,10 +428,6 @@ func main() {
 	sent := 0
 
 	// Init InfluxDB client
-	dbURL, err := url.Parse(*dbURI)
-	if err != nil {
-		log.Fatal("Error parsing db url", err)
-	}
 	con, err := influx.NewClient(influx.Config{
 		URL:      *dbURL,
 		Username: "plumber",
@@ -421,10 +437,13 @@ func main() {
 		log.Fatal("Error connecting to InfluxDB", err)
 	}
 
+	// Check the connection
 	dur, ver, err := con.Ping()
 	if err != nil {
 		log.Fatal("Error pinging InfluxDB: ", err)
 	}
+
+	// Successfully connected
 	status("OK", OK, fmt.Sprintf("Connected to db in %v (InfluxDB v%s)\n", dur, ver))
 
 	db = con
@@ -432,7 +451,7 @@ func main() {
 	// Init MQTT options
 	opts := MQTT.NewClientOptions()
 	opts.AddBroker(*brokerURI)
-	opts.SetClientID(*clientID)
+	opts.SetClientID(*optClientID)
 	opts.SetCleanSession(*clean)
 
 	if len(*store) > 0 {
@@ -450,7 +469,7 @@ func main() {
 	}
 
 	// Successfully connected
-	status("OK", OK, fmt.Sprintf("Connected to broker as %s\n\n", *clientID))
+	status("OK", OK, fmt.Sprintf("Connected to broker as %s\n\n", *optClientID))
 
 	// Subscribe to $SYS topic
 	if *sys {
